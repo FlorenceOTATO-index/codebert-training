@@ -118,3 +118,9 @@ pip install -r requirements.txt
 - Model weights (`*.pt`) are **not tracked in GitHub**.  
 - Store them in **Git LFS** or external storage (Google Drive, Baidu Netdisk).  
 - Update this README with download links if sharing.
+
+--
+
+## License
+This project is licensed under the MIT License - see the [LICENSE](./LICENSE) file for details.
+
