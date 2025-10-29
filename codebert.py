@@ -14,89 +14,91 @@ import warnings
 from tqdm.auto import tqdm
 import logging
 
-# 1. 彻底抑制所有TensorFlow和CUDA的警告
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # 只显示错误
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'  # 明确指定GPU
+# 1. Completely suppress all TensorFlow and CUDA warnings
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # show errors only
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'  # explicitly select GPU
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 warnings.filterwarnings("ignore", category=UserWarning)
 
 
-# 2. 配置更彻底的日志过滤
+# 2. Configure more aggressive log filtering
 logging.getLogger("tensorflow").setLevel(logging.ERROR)
 logging.getLogger("transformers").setLevel(logging.WARNING)
 
 
-# 1. 数据加载与预处理强化
+# 1. Data loading and preprocessing enhancements
 class WebShellPreprocessor:
     @staticmethod
     def load_and_clean_data(paths):
-        """加载并合并多个数据集"""
+        """Load and merge multiple datasets"""
         dfs = []
         for path in paths:
             df = pd.read_csv(path, header=None, names=['content', 'label'])
             df['label'] = df['label'].fillna(0).astype(int)
             dfs.append(df)
         combined = pd.concat(dfs, ignore_index=True)
-        print(f"数据集大小: {combined.shape}")
-        print(f"标签分布:\n{combined['label'].value_counts()}")
+        print(f"Dataset size: {combined.shape}")
+        print(f"Label distribution:\n{combined['label'].value_counts()}")
         return combined
 
     @staticmethod
     def clean_base64(content):
-        """强化Base64清洗"""
+        """Enhanced Base64 cleaning"""
         try:
-            # 移除非Base64字符并补全长度
+            # Remove non-Base64 characters and pad to proper length
             content = re.sub(r'[^A-Za-z0-9+/=]', '', content)
             padding = len(content) % 4
-            if padding: content += '=' * (4 - padding)
+            if padding:
+                content += '=' * (4 - padding)
             return content
         except:
             return content
 
     @staticmethod
     def extract_webshell_features(decoded):
-        """提取关键WebShell特征"""
+        """Extract key WebShell features"""
         patterns = [
-            r'(eval|system|exec|shell_exec|passthru|popen|proc_open)\s*\([^)]*\)',  # PHP危险函数
-            r'<%(.*?)%>',  # JSP标签
-            r'Runtime\.getRuntime\(\)\.exec\([^)]*\)',  # Java执行
-            r'(base64_decode|gzinflate|str_rot13)\([^)]*\)',  # 常见编码函数
-            r'(cmd\.exe|bash|powershell|wscript)',  # 可疑命令
-            r'(union select|select @@version|drop table)',  # SQL注入特征
-            r'(document\.write|eval\(|fromCharCode)',  # XSS特征
-            r'(/bin/sh|/bin/bash)',  # Shell特征
-            r'(phpspy|c99|r57|b374k)',  # 常见WebShell关键字
-            r'(<\?php|\?>|<\?=)',  # PHP标记
-            r'(\$_(GET|POST|REQUEST|COOKIE)\[)',  # 超全局变量
-            r'(file_put_contents|fwrite|mkdir)\s*\([^)]*\)'  # 文件操作
+            r'(eval|system|exec|shell_exec|passthru|popen|proc_open)\s*\([^)]*\)',  # dangerous PHP functions
+            r'<%(.*?)%>',  # JSP tags
+            r'Runtime\.getRuntime\(\)\.exec\([^)]*\)',  # Java execution
+            r'(base64_decode|gzinflate|str_rot13)\([^)]*\)',  # common decoding functions
+            r'(cmd\.exe|bash|powershell|wscript)',  # suspicious commands
+            r'(union select|select @@version|drop table)',  # SQL injection patterns
+            r'(document\.write|eval\(|fromCharCode)',  # XSS features
+            r'(/bin/sh|/bin/bash)',  # shell indicators
+            r'(phpspy|c99|r57|b374k)',  # common WebShell keywords
+            r'(<\?php|\?>|<\?=)',  # PHP tags
+            r'(\$_(GET|POST|REQUEST|COOKIE)\[)',  # superglobal usage
+            r'(file_put_contents|fwrite|mkdir)\s*\([^)]*\)'  # file operations
         ]
         features = []
         for pattern in patterns:
             matches = re.findall(pattern, decoded, re.IGNORECASE)
+            # flatten tuple matches when necessary
             features.extend([m[0] if isinstance(m, tuple) else m for m in matches])
-        return ' '.join(set(features)) if features else decoded.upper()[:500]  # 去重后合并
+        # return deduplicated matched features joined, otherwise a short uppercase excerpt of decoded text
+        return ' '.join(set(features)) if features else decoded.upper()[:500]
 
 
-# 2. 配置类（保持不变）
+# 2. Configuration class (unchanged semantics)
 class Config:
     def __init__(self):
         self.max_len = 256
         self.batch_size = 32
-        self.epochs = 3  # 增加训练轮次
+        self.epochs = 3  # increase training epochs
         self.learning_rate = 2e-5
-        self.hidden_size = 768  # 与CodeBERT隐藏层一致
+        self.hidden_size = 768  # match CodeBERT hidden size
         self.bert_path = "../codebert/small-v2"
         self.device = torch.device
         self.random_state = 42
 
 
-
-# 3. 模型架构优化
+# 3. Model architecture improvements
 class CodeBertLSTM(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.codebert = AutoModel.from_pretrained(config.bert_path)
-        for param in self.codebert.parameters():  # Selective freezing
+        for param in self.codebert.parameters():  # selective freezing
             param.requires_grad = False
 
         # Enhanced LSTM structure
@@ -144,8 +146,8 @@ class CodeBertLSTM(nn.Module):
 class WebShellDetector:
     def __init__(self, config):
         """
-        初始化检测器
-        :param config: 包含模型路径、设备等配置的Config对象
+        Initialize detector
+        :param config: Config object containing model path, device, etc.
         """
         self.config = config
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -156,35 +158,35 @@ class WebShellDetector:
 
     def load_model(self, model_path):
         """
-        加载预训练模型
-        :param model_path: 模型权重文件路径 (.pt或.bin)
+        Load pretrained model weights
+        :param model_path: path to model weights (.pt or .bin)
         """
         try:
             self.model.load_state_dict(
                 torch.load(model_path, map_location=self.config.device)
             )
             self.model.eval()
-            print(f"成功加载模型权重: {model_path}")
+            print(f"Successfully loaded model weights: {model_path}")
         except Exception as e:
-            raise ValueError(f"模型加载失败: {str(e)}")
+            raise ValueError(f"Model loading failed: {str(e)}")
 
     def predict(self, base64_content):
         """
-        预测单条样本
-        :param base64_content: Base64编码的待检测内容
-        :return: 包含预测结果的字典
+        Predict a single sample
+        :param base64_content: Base64 encoded content to inspect
+        :return: dict containing prediction result
         """
         try:
             start_time = time.time()
 
-            # 1. 强化解码流程
+            # 1. Robust decoding pipeline
             cleaned = WebShellPreprocessor.clean_base64(base64_content)
             decoded = base64.b64decode(cleaned).decode('utf-8', errors='ignore')
 
-            # 2. 特征提取（使用预处理器的方法）
+            # 2. Feature extraction using the preprocessor
             features = WebShellPreprocessor.extract_webshell_features(decoded)
 
-            # 3. Tokenize（添加截断和填充提示）
+            # 3. Tokenize (with truncation and padding)
             encoding = self.tokenizer(
                 features,
                 max_length=self.config.max_len,
@@ -194,7 +196,7 @@ class WebShellDetector:
                 add_special_tokens=True
             )
 
-            # 4. 预测
+            # 4. Prediction
             with torch.no_grad():
                 outputs = self.model(
                     input_ids=encoding['input_ids'].to(self.config.device),
@@ -212,14 +214,14 @@ class WebShellDetector:
 
         except Exception as e:
             return {
-                'error': f"预测失败: {str(e)}",
-                'raw_content': base64_content[:100] + '...'  # 返回部分原始内容用于调试
+                'error': f"Prediction failed: {str(e)}",
+                'raw_content': base64_content[:100] + '...'  # return part of raw content for debugging
             }
 
 
-# 4. 数据加载优化
+# 4. Data loader optimizations
 def create_data_loaders(opcode_sequences, labels, tokenizer, config):
-    # 使用分层分割
+    # stratified splits
     train_val, test = train_test_split(
         list(zip(opcode_sequences, labels)),
         test_size=0.2,
@@ -233,12 +235,12 @@ def create_data_loaders(opcode_sequences, labels, tokenizer, config):
         random_state=config.random_state
     )
 
-    # 动态类别权重
+    # dynamic class weights
     class_counts = torch.bincount(torch.tensor([y for _, y in train]))
     weights = 1. / class_counts.float()
     samples_weights = weights[torch.tensor([y for _, y in train])]
 
-    # 数据集类
+    # dataset class
     class WebShellDataset(Dataset):
         def __init__(self, data):
             self.data = data
@@ -261,7 +263,7 @@ def create_data_loaders(opcode_sequences, labels, tokenizer, config):
                 'label': torch.tensor(label)
             }
 
-    # 创建加载器
+    # create loaders
     train_loader = DataLoader(
         WebShellDataset(train),
         batch_size=config.batch_size,
@@ -274,14 +276,14 @@ def create_data_loaders(opcode_sequences, labels, tokenizer, config):
     return train_loader, val_loader, test_loader
 
 
-# 5. 训练流程优化
+# 5. Training flow improvements
 def train_model(model, train_loader, val_loader, optimizer, criterion, config):
     best_f1 = 0.0
     for epoch in range(config.epochs):
         model.train()
         total_loss = 0
 
-        # 使用更健壮的进度条实现
+        # use a more robust progress bar
         with tqdm(train_loader,
                   desc=f'Epoch {epoch + 1}/{config.epochs}',
                   unit='batch',
@@ -310,7 +312,7 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, config):
                     pbar.write(f"Error in batch: {str(e)}")
                     continue
 
-        # 验证阶段
+        # validation step
         val_metrics = evaluate_model(model, val_loader, config)
         print(f"\nEpoch {epoch + 1} | Loss: {total_loss / len(train_loader):.4f} | "
               f"Val F1: {val_metrics[1]:.4f}")
@@ -318,8 +320,6 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, config):
         if val_metrics[1] > best_f1:
             best_f1 = val_metrics[1]
             torch.save(model.state_dict(), 'best_codebert_model.pt')
-
-
 
 
 def evaluate_model(model, data_loader, config):
@@ -346,7 +346,7 @@ def evaluate_model(model, data_loader, config):
                 all_preds.extend(preds.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
 
-    # 计算指标
+    # compute metrics
     accuracy = accuracy_score(all_labels, all_preds)
     f1 = f1_score(all_labels, all_preds)
     recall = recall_score(all_labels, all_preds)
@@ -358,13 +358,13 @@ def evaluate_model(model, data_loader, config):
     return accuracy, f1, recall, precision
 
 
-# 主函数
+# main entrypoint
 def main():
-    # 初始化
+    # initialize
     config = Config()
     preprocessor = WebShellPreprocessor()
 
-    # 数据加载与预处理
+    # data loading and preprocessing
     df = preprocessor.load_and_clean_data([
         'webshell.csv',
         'webshell_data.csv'
@@ -382,7 +382,7 @@ def main():
         except:
             continue
 
-    # 训练流程
+    # training pipeline
     tokenizer = AutoTokenizer.from_pretrained(config.bert_path)
     train_loader, val_loader, test_loader = create_data_loaders(
         opcode_sequences, labels, tokenizer, config
@@ -398,13 +398,13 @@ def main():
 
     train_model(model, train_loader, val_loader, optimizer, criterion, config)
 
-    # 测试评估
+    # test evaluation
     model.load_state_dict(torch.load('best_codebert_model.pt'))
     test_metrics = evaluate_model(model, test_loader, config)
     print(f"\nTest Metrics - Acc: {test_metrics[0]:.4f} | F1: {test_metrics[1]:.4f} | "
           f"Recall: {test_metrics[2]:.4f} | Precision: {test_metrics[3]:.4f}")
 
-    # 部署检测器
+    # deploy detector
     detector = WebShellDetector(config)
     detector.load_model('best_codebert_model.pt')
 
@@ -417,8 +417,8 @@ def main():
     print("\nSample Predictions:")
     for i, sample in enumerate(test_samples):
         result = detector.predict(sample)
-        print(f"Sample {i + 1}: {'Malicious' if result['prediction'] else 'Normal'} "
-              f"(Confidence: {result['confidence']:.1%})")
+        print(f"Sample {i + 1}: {'Malicious' if result.get('prediction') else 'Normal'} "
+              f"(Confidence: {result.get('confidence', 0):.1%})")
 
 
 if __name__ == '__main__':
